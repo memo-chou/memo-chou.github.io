@@ -692,7 +692,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/fireba
 import { getFirestore, collection, doc, addDoc, setDoc, deleteDoc, onSnapshot, query, where, orderBy, limit, startAfter, getDocs, getCountFromServer, serverTimestamp, Timestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js';
-import { getAuth, onAuthStateChanged, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getAuth, onAuthStateChanged, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 
 import { Editor, Node, mergeAttributes } from 'https://esm.sh/@tiptap/core@2.4.0';
 import StarterKit from 'https://esm.sh/@tiptap/starter-kit@2.4.0';
@@ -744,6 +744,8 @@ const app = initializeApp(firebaseConfig);
 // データベース側のルールも「この人だけ」に絞ってあるので、
 // 仮にここを消しても他人はデータを読めない。二重の守り。
 const auth = getAuth(app);
+// 毎回アカウントを選ばせる（前に入ったアカウントへ勝手に戻らないように）
+function _gp() { const p = new GoogleAuthProvider(); p.setCustomParameters({ prompt: 'select_account' }); return p; }
 const authReady = new Promise((resolve) => {
   getRedirectResult(auth).catch(() => {});
   const gate = document.createElement('div');
@@ -757,11 +759,11 @@ const authReady = new Promise((resolve) => {
     btn.disabled = true;
     err.textContent = '';
     try {
-      await signInWithPopup(auth, new GoogleAuthProvider());
+      await signInWithPopup(auth, _gp());
     } catch (e) {
       // Safari はポップアップを塞ぐことがある。その時は画面ごと切り替える方式に回す。
       try {
-        await signInWithRedirect(auth, new GoogleAuthProvider());
+        await signInWithRedirect(auth, _gp());
         return;
       } catch (e2) {
         err.textContent = 'ログインできなかった：' + (e2 && e2.code ? e2.code : e2);
@@ -771,9 +773,21 @@ const authReady = new Promise((resolve) => {
   });
   document.body.appendChild(gate);
   onAuthStateChanged(auth, (user) => {
-    if (user) { gate.remove(); resolve(); }
-    else { gate.style.display = 'flex'; }
+    // 追い出したあとに入り直した時は、読み込みをやり直すために開き直す
+    if (user && window._kicked) { location.reload(); return; }
+    if (user) { gate.style.display = 'none'; resolve(); }
+    else { gate.style.display = 'flex'; btn.disabled = false; }
   });
+  // 違うGoogleアカウントで入ると、データベースに断られて「接続エラー」のまま
+  // ログアウトする手段がなく詰む。断られたらログアウトして入口に戻す。
+  window._kickWrongAccount = async function(e) {
+    if (!e || e.code !== 'permission-denied' || !auth.currentUser) return false;
+    const mail = auth.currentUser.email || '';
+    window._kicked = true;
+    await signOut(auth).catch(() => {});
+    err.textContent = (mail ? mail + ' ' : '') + 'では入れないよ。別のアカウントでログインしてね';
+    return true;
+  };
 });
 
 const db = getFirestore(app);
@@ -1593,6 +1607,7 @@ async function loadNotes(reset) {
   } catch(e) {
     setSyncStatus('接続エラー');
     console.error(e);
+    window._kickWrongAccount(e);
   } finally {
     // ここが飛ぶと、届くのを待っている側（詳細画面のスワイプ）が
     // 永久に待ちぼうけになるので、何があっても必ず通す
